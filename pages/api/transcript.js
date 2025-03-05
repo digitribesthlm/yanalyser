@@ -2,6 +2,11 @@
 import { YoutubeTranscript } from 'youtube-transcript';
 import cheerio from 'cheerio';
 
+// Add this at the top of your file for better error handling
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 const isAllowedDomain = (url) => {
   try {
     // Parse the URL to get the hostname
@@ -80,13 +85,21 @@ async function getVideoMetadata(videoId) {
   }
 }
 
-// Add more detailed logging to the transcript fetching process
+// Modify your fetchTranscript function to add more debugging
 const fetchTranscript = async (videoId) => {
   console.log(`[TRANSCRIPT] Starting transcript fetch for video ID: ${videoId}`);
   
   try {
+    // Try with a timeout to prevent hanging
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Transcript fetch timeout')), 15000)
+    );
+    
     console.log(`[TRANSCRIPT] Calling YoutubeTranscript.fetchTranscript for ${videoId}`);
-    const transcriptList = await YoutubeTranscript.fetchTranscript(videoId);
+    const fetchPromise = YoutubeTranscript.fetchTranscript(videoId);
+    
+    // Race between fetch and timeout
+    const transcriptList = await Promise.race([fetchPromise, timeoutPromise]);
     
     console.log(`[TRANSCRIPT] Response received: ${transcriptList ? 'Success' : 'Empty response'}`);
     console.log(`[TRANSCRIPT] Transcript entries: ${transcriptList ? transcriptList.length : 0}`);
@@ -104,6 +117,58 @@ const fetchTranscript = async (videoId) => {
       message: error.message,
       stack: error.stack
     });
+    
+    // Try to provide more specific error information
+    if (error.message.includes('Could not get transcripts')) {
+      console.error('[TRANSCRIPT] No captions available for this video');
+    } else if (error.message.includes('timeout')) {
+      console.error('[TRANSCRIPT] Request timed out - YouTube API might be rate limiting');
+    } else if (error.message.includes('network')) {
+      console.error('[TRANSCRIPT] Network error - check internet connection');
+    }
+    
+    throw error;
+  }
+};
+
+// Add this fallback function
+const fetchTranscriptFallback = async (videoId) => {
+  console.log(`[FALLBACK] Attempting fallback transcript fetch for ${videoId}`);
+  
+  try {
+    // Direct fetch to YouTube's transcript API
+    const response = await fetch(`https://www.youtube.com/api/timedtext?v=${videoId}&lang=en`);
+    
+    if (!response.ok) {
+      console.error(`[FALLBACK] YouTube API returned ${response.status}`);
+      throw new Error(`YouTube API returned ${response.status}`);
+    }
+    
+    const data = await response.text();
+    console.log(`[FALLBACK] Response received, length: ${data.length}`);
+    
+    // If we got XML back, try to parse it
+    if (data.includes('<?xml')) {
+      console.log(`[FALLBACK] Parsing XML response`);
+      // Simple XML parsing (you might want to use a proper XML parser)
+      const textSegments = data.match(/<text.+?>(.*?)<\/text>/g) || [];
+      
+      return textSegments.map((segment, index) => {
+        const startMatch = segment.match(/start="([\d\.]+)"/);
+        const durMatch = segment.match(/dur="([\d\.]+)"/);
+        const textMatch = segment.match(/<text.+?>(.*?)<\/text>/);
+        
+        return {
+          offset: startMatch ? parseFloat(startMatch[1]) * 1000 : index * 5000,
+          duration: durMatch ? parseFloat(durMatch[1]) * 1000 : 5000,
+          text: textMatch ? textMatch[1].replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>') : ''
+        };
+      });
+    }
+    
+    return [];
+  } catch (error) {
+    console.error(`[FALLBACK] Error in fallback:`, error);
     throw error;
   }
 };
@@ -173,19 +238,18 @@ export default async function handler(req, res) {
     console.log(`[HANDLER] Starting parallel fetch for metadata and transcript`);
     
     const metadataPromise = getVideoMetadata(videoId);
-    const transcriptPromise = fetchTranscript(videoId)
-      .catch(error => {
-        console.error(`[HANDLER] Transcript fetch failed:`, {
-          name: error.name,
-          message: error.message,
-          videoId
-        });
-        throw error;
-      });
+    let transcriptList;
+    try {
+      transcriptList = await fetchTranscript(videoId);
+    } catch (error) {
+      console.log(`[HANDLER] Primary transcript fetch failed, trying fallback...`);
+      // If it fails, try the fallback
+      transcriptList = await fetchTranscriptFallback(videoId);
+    }
     
     const [metadata, transcriptList] = await Promise.all([
       metadataPromise,
-      transcriptPromise
+      transcriptList
     ]);
     
     console.log(`[HANDLER] Both promises resolved. Transcript length: ${transcriptList ? transcriptList.length : 0}`);
