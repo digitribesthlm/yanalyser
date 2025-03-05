@@ -41,53 +41,92 @@ const isAllowedDomain = (url) => {
 };
 
 async function getVideoMetadata(videoId) {
+  const userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+  
   try {
-    const response = await fetch(`https://www.youtube.com/watch?v=${videoId}`);
-    const html = await response.text();
+    console.log('[METADATA] Fetching video metadata for:', videoId);
+    const response = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+      headers: {
+        'User-Agent': userAgent,
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      }
+    });
     
-    // Look for the ytInitialData in the script tags
-    const ytInitialPlayerMatch = html.match(/ytInitialPlayerResponse\s*=\s*({.+?});/);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch video page: ${response.status}`);
+    }
+    
+    const html = await response.text();
+    console.log('[METADATA] Successfully fetched video page');
     
     let title = 'Untitled Video';
     let description = 'No description available';
     let author = 'Unknown Author';
 
-    if (ytInitialPlayerMatch) {
-      try {
-        const playerData = JSON.parse(ytInitialPlayerMatch[1]);
-        const videoDetails = playerData.videoDetails;
-        if (videoDetails) {
-          title = videoDetails.title || title;
-          // Try multiple possible description fields
-          description = videoDetails.description || 
-                       videoDetails.shortDescription || 
-                       playerData.microformat?.playerMicroformatRenderer?.description?.simpleText ||
-                       'No description available';
-          author = videoDetails.author || videoDetails.channelId || author;
-        }
+    // Try different ways to extract metadata
+    const dataMatches = [
+      html.match(/ytInitialPlayerResponse\s*=\s*({.+?});/),
+      html.match(/ytInitialData\s*=\s*({.+?});/),
+      html.match(/<script[^>]*>var ytInitialData = ({.+?});<\/script>/)
+    ];
 
-        // Additional fallback for description
-        if (!description || description === 'No description available') {
-          const microformat = playerData.microformat?.playerMicroformatRenderer;
-          if (microformat) {
-            description = microformat.description?.simpleText || 
-                         microformat.description?.runs?.map(run => run.text).join('') ||
-                         'No description available';
+    for (const match of dataMatches) {
+      if (match) {
+        try {
+          const data = JSON.parse(match[1]);
+          console.log('[METADATA] Successfully parsed YouTube data');
+          
+          // Try different paths to get video details
+          const videoDetails = 
+            data.videoDetails || 
+            data.contents?.twoColumnWatchNextResults?.results?.results?.contents?.[0]?.videoPrimaryInfoRenderer ||
+            data.contents?.twoColumnWatchNextResults?.results?.results?.contents?.[0]?.videoSecondaryInfoRenderer;
+
+          if (videoDetails) {
+            title = videoDetails.title || videoDetails.videoTitle || title;
+            description = videoDetails.shortDescription || videoDetails.description || description;
+            author = videoDetails.author || videoDetails.ownerChannelName || author;
+            break;
           }
+        } catch (e) {
+          console.log('[METADATA] Failed to parse data format:', e.message);
+          continue;
         }
-      } catch (e) {
-        console.error('Error parsing player data:', e);
       }
     }
+    // If we still don't have metadata, try regex fallbacks
+    if (title === 'Untitled Video') {
+      const titleMatch = html.match(/<title>([^<]+)<\/title>/) || html.match(/"title":"([^"]+)"/);;
+      if (titleMatch) title = titleMatch[1].replace(' - YouTube', '');
+    }
 
-    // Log the extracted data for debugging
-    console.log('Extracted metadata:', { title, description: description.substring(0, 100) + '...', author });
+    if (description === 'No description available') {
+      const descMatch = html.match(/"description":\{"simpleText":"([^"]+)"\}/) || 
+                       html.match(/"description":"([^"]+)"/);;
+      if (descMatch) description = descMatch[1];
+    }
 
+    if (author === 'Unknown Author') {
+      const authorMatch = html.match(/"author":"([^"]+)"/) || 
+                        html.match(/"ownerChannelName":"([^"]+)"/);;
+      if (authorMatch) author = authorMatch[1];
+    }
+    console.log('[METADATA] Final metadata:', { title, description: description.substring(0, 100) + '...', author });
+    
+    return { title, description, author };
+  } catch (error) {
+    console.error('[METADATA] Error fetching metadata:', error);
     return {
-      title,
-      description,
-      author
+      title: 'Untitled Video',
+      description: 'No description available',
+      author: 'Unknown Author'
     };
+  }
+
+
+
+
   } catch (error) {
     console.error('Error fetching video metadata:', error);
     return {
@@ -149,21 +188,52 @@ const fetchTranscript = async (videoId) => {
     const html = await response.text();
     
     // Try to extract captions data from the page
-    const captionsMatch = html.match(/"captionTracks":\[(.+?)\]/);
+    console.log('[TRANSCRIPT] Searching for captions in HTML...');
+    
+    // First try manual captions
+    let captionsMatch = html.match(/"captionTracks":\[(.+?)\]/);
+    
+    // If no manual captions, try auto-generated captions
     if (!captionsMatch) {
-      throw new Error('No caption tracks found');
+      console.log('[TRANSCRIPT] No manual captions found, checking for auto-generated...');
+      captionsMatch = html.match(/"playerCaptionsTracklistRenderer":\{(.+?)\}\]/);
+      
+      if (!captionsMatch) {
+        console.log('[TRANSCRIPT] Trying alternative caption format...');
+        // Try another format that sometimes appears
+        captionsMatch = html.match(/"playerCaptionsRenderer":\{(.+?)\}\]/);
+      }
+      
+      if (!captionsMatch) {
+        throw new Error('No caption tracks found');
+      }
     }
 
     const captionsData = JSON.parse(`[${captionsMatch[1]}]`);
-    const englishCaptions = captionsData.find(c => 
-      c.languageCode === 'en' || c.languageCode.startsWith('en-')
-    );
+    console.log('[TRANSCRIPT] Caption data found:', JSON.stringify(captionsData, null, 2));
     
-    if (!englishCaptions || !englishCaptions.baseUrl) {
+    // Try to find English captions with more flexible matching
+    const englishCaptions = captionsData.find(c => {
+      const hasEnglishCode = c.languageCode === 'en' || c.languageCode?.startsWith('en-');
+      const hasEnglishName = c.name?.simpleText?.toLowerCase().includes('english') ||
+                           c.name?.toLowerCase().includes('english');
+      return hasEnglishCode || hasEnglishName;
+    });
+    
+    if (!englishCaptions) {
+      console.log('[TRANSCRIPT] No English captions found in:', captionsData);
       throw new Error('No English captions available');
     }
+    
+    const captionUrl = englishCaptions.baseUrl || englishCaptions.url;
+    if (!captionUrl) {
+      console.log('[TRANSCRIPT] No caption URL found in:', englishCaptions);
+      throw new Error('No caption URL available');
+    }
+    
+    console.log('[TRANSCRIPT] Found caption URL:', captionUrl);
 
-    const transcriptResponse = await fetch(englishCaptions.baseUrl, {
+    const transcriptResponse = await fetch(captionUrl, {
       headers: {
         'User-Agent': userAgent,
         'Accept-Language': 'en-US,en;q=0.9',
