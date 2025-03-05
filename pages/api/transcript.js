@@ -248,14 +248,14 @@ export default async function handler(req, res) {
       transcriptPromise = fetchTranscriptFallback(videoId);
     }
     
-    const [metadata, transcriptList] = await Promise.all([
+    const [metadata, transcriptData] = await Promise.all([
       metadataPromise,
       transcriptPromise
     ]);
     
-    console.log(`[HANDLER] Both promises resolved. Transcript length: ${transcriptList ? transcriptList.length : 0}`);
+    console.log(`[HANDLER] Both promises resolved. Transcript length: ${transcriptData ? transcriptData.length : 0}`);
 
-    if (!transcriptList || transcriptList.length === 0) {
+    if (!transcriptData || transcriptData.length === 0) {
       console.log('No transcript found for video ID:', videoId);
       return res.status(404).json({ 
         message: 'No transcript found for this video',
@@ -264,11 +264,11 @@ export default async function handler(req, res) {
     }
 
     // Log the first few transcript entries to debug
-    console.log('First few transcript entries:', transcriptList.slice(0, 3));
+    console.log('First few transcript entries:', transcriptData.slice(0, 3));
 
     // After fetching the transcript
     console.log('Raw transcript data (first 5 entries):', 
-      transcriptList.slice(0, 5).map(item => ({
+      transcriptData.slice(0, 5).map(item => ({
         offset: item.offset,
         text: item.text.substring(0, 50),
         duration: item.duration
@@ -282,13 +282,13 @@ export default async function handler(req, res) {
       title: metadata.title,
       description: metadata.description,
       author: metadata.author,
-      transcriptLanguage: transcriptList[0]?.language || 'unknown'
+      transcriptLanguage: transcriptData[0]?.language || 'unknown'
     };
 
-    console.log('Successfully fetched transcript, length:', transcriptList.length);
+    console.log('Successfully fetched transcript, length:', transcriptData.length);
     
     // Update the transcript formatting
-    const formattedTranscript = transcriptList.map(item => {
+    const formattedTranscript = transcriptData.map(item => {
       // Get the start time from offset (it's already in seconds)
       const startTime = item.offset || 0;
 
@@ -301,7 +301,7 @@ export default async function handler(req, res) {
 
     // Add debug logging to verify
     console.log('First formatted entry with offset:', {
-      raw: transcriptList[0],
+      raw: transcriptData[0],
       formatted: formattedTranscript[0]
     });
 
