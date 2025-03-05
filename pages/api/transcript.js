@@ -1,6 +1,6 @@
 // pages/api/transcript.js
 import { YoutubeTranscript } from 'youtube-transcript';
-import cheerio from 'cheerio';
+import fetch from 'node-fetch';
 
 // Configure for Vercel serverless environment
 export const config = {
@@ -8,9 +8,12 @@ export const config = {
     bodyParser: {
       sizeLimit: '1mb',
     },
-    responseLimit: false,
+    responseLimit: '8mb',
+    externalResolver: true,
   },
 };
+
+
 
 // Add this at the top of your file for better error handling
 process.on('unhandledRejection', (reason, promise) => {
@@ -97,6 +100,7 @@ async function getVideoMetadata(videoId) {
 
 // Modify your fetchTranscript function to add more debugging
 const fetchTranscript = async (videoId) => {
+  const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36';
   console.log(`[TRANSCRIPT] Starting fetch for video ID: ${videoId}`);
   
   try {
@@ -113,7 +117,17 @@ const fetchTranscript = async (videoId) => {
 
     console.log(`[TRANSCRIPT] Attempting fallback method`);
     // If the first method fails, try with fetch
-    const response = await fetch(`https://www.youtube.com/watch?v=${videoId}`);
+    const response = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+      headers: {
+        'User-Agent': userAgent,
+        'Accept-Language': 'en-US,en;q=0.9',
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Failed to fetch video page: ${response.status}`);
+    }
+    
     const html = await response.text();
     
     // Try to extract captions data from the page
@@ -131,7 +145,12 @@ const fetchTranscript = async (videoId) => {
       throw new Error('No English captions available');
     }
 
-    const transcriptResponse = await fetch(englishCaptions.baseUrl);
+    const transcriptResponse = await fetch(englishCaptions.baseUrl, {
+      headers: {
+        'User-Agent': userAgent,
+        'Accept-Language': 'en-US,en;q=0.9',
+      }
+    });
     const transcriptXml = await transcriptResponse.text();
     
     const matches = transcriptXml.match(/<text.+?>([^<]+)<\/text>/g);
