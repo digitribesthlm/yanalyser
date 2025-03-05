@@ -2,6 +2,16 @@
 import { YoutubeTranscript } from 'youtube-transcript';
 import cheerio from 'cheerio';
 
+// Configure for Vercel serverless environment
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: '1mb',
+    },
+    responseLimit: false,
+  },
+};
+
 // Add this at the top of your file for better error handling
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Rejection at:', promise, 'reason:', reason);
@@ -87,32 +97,66 @@ async function getVideoMetadata(videoId) {
 
 // Modify your fetchTranscript function to add more debugging
 const fetchTranscript = async (videoId) => {
-  console.log(`[TRANSCRIPT] Starting transcript fetch for video ID: ${videoId}`);
+  console.log(`[TRANSCRIPT] Starting fetch for video ID: ${videoId}`);
   
   try {
-    // Try with a timeout to prevent hanging - increased to 30 seconds
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Transcript fetch timeout')), 30000)
+    // First try the default method
+    try {
+      const transcriptList = await YoutubeTranscript.fetchTranscript(videoId);
+      if (transcriptList && transcriptList.length > 0) {
+        console.log(`[TRANSCRIPT] Successfully fetched transcript using primary method`);
+        return transcriptList;
+      }
+    } catch (primaryError) {
+      console.log(`[TRANSCRIPT] Primary method failed:`, primaryError.message);
+    }
+
+    console.log(`[TRANSCRIPT] Attempting fallback method`);
+    // If the first method fails, try with fetch
+    const response = await fetch(`https://www.youtube.com/watch?v=${videoId}`);
+    const html = await response.text();
+    
+    // Try to extract captions data from the page
+    const captionsMatch = html.match(/"captionTracks":\[(.+?)\]/);
+    if (!captionsMatch) {
+      throw new Error('No caption tracks found');
+    }
+
+    const captionsData = JSON.parse(`[${captionsMatch[1]}]`);
+    const englishCaptions = captionsData.find(c => 
+      c.languageCode === 'en' || c.languageCode.startsWith('en-')
     );
     
-    console.log(`[TRANSCRIPT] Calling YoutubeTranscript.fetchTranscript for ${videoId}`);
-    const fetchPromise = YoutubeTranscript.fetchTranscript(videoId, {
-      lang: 'en',  // Try English first
-      fallback: ['auto']  // Fall back to auto-generated if available
+    if (!englishCaptions || !englishCaptions.baseUrl) {
+      throw new Error('No English captions available');
+    }
+
+    const transcriptResponse = await fetch(englishCaptions.baseUrl);
+    const transcriptXml = await transcriptResponse.text();
+    
+    const matches = transcriptXml.match(/<text.+?>([^<]+)<\/text>/g);
+    if (!matches) {
+      throw new Error('Failed to parse transcript XML');
+    }
+
+    const transcriptList = matches.map((item, index) => {
+      const startMatch = item.match(/start="([\d\.]+)"/);
+      const durMatch = item.match(/dur="([\d\.]+)"/);
+      const textMatch = item.match(/>([^<]+)</);
+      
+      return {
+        offset: startMatch ? Math.floor(parseFloat(startMatch[1]) * 1000) : index * 5000,
+        duration: durMatch ? Math.floor(parseFloat(durMatch[1]) * 1000) : 5000,
+        text: textMatch ? textMatch[1].replace(/&amp;/g, '&').replace(/&quot;/g, '"') : ''
+      };
     });
     
-    // Race between fetch and timeout
-    const transcriptList = await Promise.race([fetchPromise, timeoutPromise]);
-    
-    console.log(`[TRANSCRIPT] Response received: ${transcriptList ? 'Success' : 'Empty response'}`);
-    console.log(`[TRANSCRIPT] Transcript entries: ${transcriptList ? transcriptList.length : 0}`);
-    
-    if (transcriptList && transcriptList.length > 0) {
-      console.log(`[TRANSCRIPT] First entry sample:`, JSON.stringify(transcriptList[0]));
-    } else {
-      console.log(`[TRANSCRIPT] No transcript entries found`);
-      throw new Error('No transcript entries found');
+    if (transcriptList.length > 0) {
+      console.log(`[TRANSCRIPT] Successfully fetched transcript using fallback method`);
+      return transcriptList;
     }
+    
+    throw new Error('No transcript entries found in the response');
   } catch (error) {
     console.error(`[TRANSCRIPT] Error fetching transcript:`, {
       name: error.name,
@@ -121,15 +165,15 @@ const fetchTranscript = async (videoId) => {
     });
     
     // Try to provide more specific error information
-    if (error.message.includes('Could not get transcripts')) {
-      console.error('[TRANSCRIPT] No captions available for this video');
-    } else if (error.message.includes('timeout')) {
-      console.error('[TRANSCRIPT] Request timed out - YouTube API might be rate limiting');
+    if (error.message.includes('Could not get transcripts') || error.message.includes('No caption tracks found')) {
+      throw new Error('No captions available for this video');
+    } else if (error.message.includes('No English captions')) {
+      throw new Error('No English captions available for this video');
     } else if (error.message.includes('network')) {
-      console.error('[TRANSCRIPT] Network error - check internet connection');
+      throw new Error('Network error - please check your internet connection');
+    } else {
+      throw new Error('Failed to fetch transcript: ' + error.message);
     }
-    
-    throw error;
   }
 };
 
@@ -197,6 +241,27 @@ const fetchTranscriptFallback = async (videoId) => {
 };
 
 export default async function handler(req, res) {
+  // Set CORS headers
+  res.setHeader('Access-Control-Allow-Credentials', true);
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version'
+  );
+
+  // Handle preflight request
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
+  if (req.method !== 'POST') {
+    return res.status(405).json({ 
+      message: 'Method not allowed',
+      detail: `Expected POST, got ${req.method}`
+    });
+  }
   console.log('API Request received:', { method: req.method, body: req.body });
 
   // Set CORS headers
@@ -245,7 +310,22 @@ export default async function handler(req, res) {
     console.log('URL received:', url);
     console.log('Extracting video ID from URL:', url);
     // Extract video ID from URL
-    const videoId = url.match(/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/)?.[1];
+    let videoId;
+    try {
+      const urlObj = new URL(url);
+      if (urlObj.hostname.includes('youtube.com')) {
+        videoId = urlObj.searchParams.get('v');
+      } else if (urlObj.hostname === 'youtu.be') {
+        videoId = urlObj.pathname.slice(1);
+      }
+    } catch (error) {
+      console.error('Error parsing URL:', error);
+    }
+
+    // Fallback to regex if URL parsing fails
+    if (!videoId) {
+      videoId = url.match(/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/)?.[1];
+    }
 
     if (!videoId) {
       console.log('Invalid video ID from URL:', url);
