@@ -1,3 +1,5 @@
+import React from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { useEffect, useState } from 'react';
 import Footer from './Footer';
@@ -36,13 +38,12 @@ export default function DashboardLayout({ children }) {
     setIsMenuOpen(false);
   };
 
+  // Updated menu items for YouTube Transcript Analyzer
   const menuItems = [
-    { path: '/dashboard', label: 'Dashboard', icon: '📊' },
-    { path: '/clients', label: 'Clients', icon: '👥' },
-    { path: '/projects', label: 'Projects', icon: '📁' },
-    { path: '/tasks/board', label: 'Task Board', icon: '📋' },
-    { path: '/time', label: 'Time Tracking', icon: '⏱️' },
-    { path: '/time/reports', label: 'Reports', icon: '📈' },
+    { path: '/transcript', label: 'YouTube Transcript', icon: '📝' },
+    { path: '/analysis', label: 'Content Analysis', icon: '📊' },
+    { path: '/optimization', label: 'Video Optimization', icon: '🚀' },
+    { path: '/company-videos', label: 'Company Videos', icon: '🏢' },
   ];
 
   const isActive = (path) => router.pathname === path;
@@ -54,7 +55,7 @@ export default function DashboardLayout({ children }) {
       {/* Sidebar */}
       <div className="w-64 bg-base-200 min-h-screen">
         <div className="p-4">
-          <h1 className="text-xl font-bold mb-8">Agency Dashboard</h1>
+          <h1 className="text-xl font-bold mb-8">YouTube Analyzer</h1>
           <nav className="space-y-2">
             {menuItems.map((item) => (
               <a
