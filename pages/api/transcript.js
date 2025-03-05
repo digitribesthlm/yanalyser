@@ -84,7 +84,15 @@ async function getVideoMetadata(videoId) {
             data.contents?.twoColumnWatchNextResults?.results?.results?.contents?.[0]?.videoSecondaryInfoRenderer;
 
           if (videoDetails) {
-            title = videoDetails.title || videoDetails.videoTitle || title;
+            // Handle title that might be in runs format
+            if (typeof videoDetails.title === 'string') {
+              title = videoDetails.title;
+            } else if (videoDetails.title?.runs?.[0]?.text) {
+              title = videoDetails.title.runs[0].text;
+            } else if (videoDetails.videoTitle) {
+              title = videoDetails.videoTitle;
+            }
+
             description = videoDetails.shortDescription || videoDetails.description || description;
             author = videoDetails.author || videoDetails.ownerChannelName || author;
             break;
