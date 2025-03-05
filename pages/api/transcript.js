@@ -90,13 +90,16 @@ const fetchTranscript = async (videoId) => {
   console.log(`[TRANSCRIPT] Starting transcript fetch for video ID: ${videoId}`);
   
   try {
-    // Try with a timeout to prevent hanging
+    // Try with a timeout to prevent hanging - increased to 30 seconds
     const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Transcript fetch timeout')), 15000)
+      setTimeout(() => reject(new Error('Transcript fetch timeout')), 30000)
     );
     
     console.log(`[TRANSCRIPT] Calling YoutubeTranscript.fetchTranscript for ${videoId}`);
-    const fetchPromise = YoutubeTranscript.fetchTranscript(videoId);
+    const fetchPromise = YoutubeTranscript.fetchTranscript(videoId, {
+      lang: 'en',  // Try English first
+      fallback: ['auto']  // Fall back to auto-generated if available
+    });
     
     // Race between fetch and timeout
     const transcriptList = await Promise.race([fetchPromise, timeoutPromise]);
@@ -108,9 +111,8 @@ const fetchTranscript = async (videoId) => {
       console.log(`[TRANSCRIPT] First entry sample:`, JSON.stringify(transcriptList[0]));
     } else {
       console.log(`[TRANSCRIPT] No transcript entries found`);
+      throw new Error('No transcript entries found');
     }
-    
-    return transcriptList;
   } catch (error) {
     console.error(`[TRANSCRIPT] Error fetching transcript:`, {
       name: error.name,
@@ -136,22 +138,43 @@ const fetchTranscriptFallback = async (videoId) => {
   console.log(`[FALLBACK] Attempting fallback transcript fetch for ${videoId}`);
   
   try {
-    // Direct fetch to YouTube's transcript API
-    const response = await fetch(`https://www.youtube.com/api/timedtext?v=${videoId}&lang=en`);
+    // First, try to get available languages
+    const langResponse = await fetch(`https://www.youtube.com/api/timedtext?type=list&v=${videoId}`);
+    if (!langResponse.ok) {
+      throw new Error(`Failed to fetch available languages: ${langResponse.status}`);
+    }
+    
+    const langData = await langResponse.text();
+    console.log(`[FALLBACK] Available languages response received`);
+    
+    // Try to find English or auto-generated captions
+    const langCodes = ['en', 'en-US', 'en-GB', 'a.en'];
+    let selectedLang = 'en';
+    
+    for (const lang of langCodes) {
+      if (langData.includes(`lang_code="${lang}"`)) {
+        selectedLang = lang;
+        break;
+      }
+    }
+    
+    // Fetch the transcript with the selected language
+    const response = await fetch(`https://www.youtube.com/api/timedtext?v=${videoId}&lang=${selectedLang}`);
     
     if (!response.ok) {
-      console.error(`[FALLBACK] YouTube API returned ${response.status}`);
       throw new Error(`YouTube API returned ${response.status}`);
     }
     
     const data = await response.text();
-    console.log(`[FALLBACK] Response received, length: ${data.length}`);
+    console.log(`[FALLBACK] Transcript response received, length: ${data.length}`);
     
-    // If we got XML back, try to parse it
     if (data.includes('<?xml')) {
       console.log(`[FALLBACK] Parsing XML response`);
-      // Simple XML parsing (you might want to use a proper XML parser)
       const textSegments = data.match(/<text.+?>(.*?)<\/text>/g) || [];
+      
+      if (textSegments.length === 0) {
+        throw new Error('No transcript segments found in response');
+      }
       
       return textSegments.map((segment, index) => {
         const startMatch = segment.match(/start="([\d\.]+)"/);
