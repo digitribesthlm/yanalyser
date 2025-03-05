@@ -13,6 +13,8 @@ export const config = {
   },
 };
 
+
+
 // Add this at the top of your file for better error handling
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Rejection at:', promise, 'reason:', reason);
@@ -93,30 +95,24 @@ async function getVideoMetadata(videoId) {
         }
       }
     }
-    
     // If we still don't have metadata, try regex fallbacks
     if (title === 'Untitled Video') {
-      const titleMatch = html.match(/<title>([^<]+)<\/title>/) || html.match(/"title":"([^"]+)"/);
+      const titleMatch = html.match(/<title>([^<]+)<\/title>/) || html.match(/"title":"([^"]+)"/);;
       if (titleMatch) title = titleMatch[1].replace(' - YouTube', '');
     }
 
     if (description === 'No description available') {
       const descMatch = html.match(/"description":\{"simpleText":"([^"]+)"\}/) || 
-                       html.match(/"description":"([^"]+)"/);
+                       html.match(/"description":"([^"]+)"/);;
       if (descMatch) description = descMatch[1];
     }
 
     if (author === 'Unknown Author') {
       const authorMatch = html.match(/"author":"([^"]+)"/) || 
-                        html.match(/"ownerChannelName":"([^"]+)"/);
+                        html.match(/"ownerChannelName":"([^"]+)"/);;
       if (authorMatch) author = authorMatch[1];
     }
-    
-    console.log('[METADATA] Final metadata:', { 
-      title, 
-      description: description.substring(0, 100) + '...', 
-      author 
-    });
+    console.log('[METADATA] Final metadata:', { title, description: description.substring(0, 100) + '...', author });
     
     return { title, description, author };
   } catch (error) {
@@ -154,21 +150,192 @@ const fetchTranscript = async (videoId) => {
       }
     }
 
-    // Rest of the fetchTranscript function remains the same as in the original file
-    // ... (content continues)
+    console.log(`[TRANSCRIPT] All primary attempts failed, trying fallback method`);
+    // If the first method fails, try with fetch
+    const response = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+      headers: {
+        'User-Agent': userAgent,
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Upgrade-Insecure-Requests': '1'
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Failed to fetch video page: ${response.status}`);
+    }
+    
+    const html = await response.text();
+    
+    // Try to extract captions data from the page
+    console.log('[TRANSCRIPT] Searching for captions in HTML...');
+    
+    // First try manual captions
+    let captionsMatch = html.match(/"captionTracks":\[(.+?)\]/);
+    
+    // If no manual captions, try auto-generated captions
+    if (!captionsMatch) {
+      console.log('[TRANSCRIPT] No manual captions found, checking for auto-generated...');
+      captionsMatch = html.match(/"playerCaptionsTracklistRenderer":\{(.+?)\}\]/);
+      
+      if (!captionsMatch) {
+        console.log('[TRANSCRIPT] Trying alternative caption format...');
+        // Try another format that sometimes appears
+        captionsMatch = html.match(/"playerCaptionsRenderer":\{(.+?)\}\]/);
+      }
+      
+      if (!captionsMatch) {
+        throw new Error('No caption tracks found');
+      }
+    }
+
+    const captionsData = JSON.parse(`[${captionsMatch[1]}]`);
+    console.log('[TRANSCRIPT] Caption data found:', JSON.stringify(captionsData, null, 2));
+    
+    // Try to find English captions with more flexible matching
+    const englishCaptions = captionsData.find(c => {
+      const hasEnglishCode = c.languageCode === 'en' || c.languageCode?.startsWith('en-');
+      const hasEnglishName = c.name?.simpleText?.toLowerCase().includes('english') ||
+                           c.name?.toLowerCase().includes('english');
+      return hasEnglishCode || hasEnglishName;
+    });
+    
+    if (!englishCaptions) {
+      console.log('[TRANSCRIPT] No English captions found in:', captionsData);
+      throw new Error('No English captions available');
+    }
+    
+    const captionUrl = englishCaptions.baseUrl || englishCaptions.url;
+    if (!captionUrl) {
+      console.log('[TRANSCRIPT] No caption URL found in:', englishCaptions);
+      throw new Error('No caption URL available');
+    }
+    
+    console.log('[TRANSCRIPT] Found caption URL:', captionUrl);
+
+    const transcriptResponse = await fetch(captionUrl, {
+      headers: {
+        'User-Agent': userAgent,
+        'Accept-Language': 'en-US,en;q=0.9',
+      }
+    });
+    const transcriptXml = await transcriptResponse.text();
+    
+    const matches = transcriptXml.match(/<text.+?>([^<]+)<\/text>/g);
+    if (!matches) {
+      throw new Error('Failed to parse transcript XML');
+    }
+
+    const transcriptList = matches.map((item, index) => {
+      const startMatch = item.match(/start="([\d\.]+)"/);
+      const durMatch = item.match(/dur="([\d\.]+)"/);
+      const textMatch = item.match(/>([^<]+)</);
+      
+      return {
+        offset: startMatch ? Math.floor(parseFloat(startMatch[1]) * 1000) : index * 5000,
+        duration: durMatch ? Math.floor(parseFloat(durMatch[1]) * 1000) : 5000,
+        text: textMatch ? textMatch[1].replace(/&amp;/g, '&').replace(/&quot;/g, '"') : ''
+      };
+    });
+    
+    if (transcriptList.length > 0) {
+      console.log(`[TRANSCRIPT] Successfully fetched transcript using fallback method`);
+      return transcriptList;
+    }
+    
+    throw new Error('No transcript entries found in the response');
   } catch (error) {
-    // Error handling remains the same
+    console.error(`[TRANSCRIPT] Error fetching transcript:`, {
+      name: error.name,
+      message: error.message,
+      stack: error.stack
+    });
+    
+    // Try to provide more specific error information
+    if (error.message.includes('Could not get transcripts') || error.message.includes('No caption tracks found')) {
+      throw new Error('No captions available for this video');
+    } else if (error.message.includes('No English captions')) {
+      throw new Error('No English captions available for this video');
+    } else if (error.message.includes('network')) {
+      throw new Error('Network error - please check your internet connection');
+    } else {
+      throw new Error('Failed to fetch transcript: ' + error.message);
+    }
   }
 };
 
-// The fetchTranscriptFallback function remains the same
+// Add this fallback function
 const fetchTranscriptFallback = async (videoId) => {
-  // Content remains the same as in the original file
+  console.log(`[FALLBACK] Attempting fallback transcript fetch for ${videoId}`);
+  
+  try {
+    // First, try to get available languages
+    const langResponse = await fetch(`https://www.youtube.com/api/timedtext?type=list&v=${videoId}`);
+    if (!langResponse.ok) {
+      throw new Error(`Failed to fetch available languages: ${langResponse.status}`);
+    }
+    
+    const langData = await langResponse.text();
+    console.log(`[FALLBACK] Available languages response received`);
+    
+    // Try to find English or auto-generated captions
+    const langCodes = ['en', 'en-US', 'en-GB', 'a.en'];
+    let selectedLang = 'en';
+    
+    for (const lang of langCodes) {
+      if (langData.includes(`lang_code="${lang}"`)) {
+        selectedLang = lang;
+        break;
+      }
+    }
+    
+    // Fetch the transcript with the selected language
+    const response = await fetch(`https://www.youtube.com/api/timedtext?v=${videoId}&lang=${selectedLang}`);
+    
+    if (!response.ok) {
+      throw new Error(`YouTube API returned ${response.status}`);
+    }
+    
+    const data = await response.text();
+    console.log(`[FALLBACK] Transcript response received, length: ${data.length}`);
+    
+    if (data.includes('<?xml')) {
+      console.log(`[FALLBACK] Parsing XML response`);
+      const textSegments = data.match(/<text.+?>(.*?)<\/text>/g) || [];
+      
+      if (textSegments.length === 0) {
+        throw new Error('No transcript segments found in response');
+      }
+      
+      return textSegments.map((segment, index) => {
+        const startMatch = segment.match(/start="([\d\.]+)"/);
+        const durMatch = segment.match(/dur="([\d\.]+)"/);
+        const textMatch = segment.match(/<text.+?>(.*?)<\/text>/);
+        
+        return {
+          offset: startMatch ? parseFloat(startMatch[1]) * 1000 : index * 5000,
+          duration: durMatch ? parseFloat(durMatch[1]) * 1000 : 5000,
+          text: textMatch ? textMatch[1].replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>') : ''
+        };
+      });
+    }
+    
+    return [];
+  } catch (error) {
+    console.error(`[FALLBACK] Error in fallback:`, error);
+    throw error;
+  }
 };
 
 export default async function handler(req, res) {
-  // Duplicate CORS headers removed - keep only one set
-
   // Set CORS headers
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -190,8 +357,31 @@ export default async function handler(req, res) {
       detail: `Expected POST, got ${req.method}`
     });
   }
-
   console.log('API Request received:', { method: req.method, body: req.body });
+
+  // Set CORS headers
+  res.setHeader('Access-Control-Allow-Credentials', true);
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version'
+  );
+
+  // Handle preflight request
+  if (req.method === 'OPTIONS') {
+    console.log('Handling OPTIONS request');
+    res.status(200).end();
+    return;
+  }
+
+  if (req.method !== 'POST') {
+    console.log('Invalid method:', req.method);
+    return res.status(405).json({ 
+      message: 'Method not allowed',
+      detail: `Expected POST, got ${req.method}`
+    });
+  }
 
   try {
     console.log('Processing request body...');
@@ -214,7 +404,6 @@ export default async function handler(req, res) {
 
     console.log('URL received:', url);
     console.log('Extracting video ID from URL:', url);
-    
     // Extract video ID from URL
     let videoId;
     try {
@@ -243,9 +432,10 @@ export default async function handler(req, res) {
 
     console.log('Extracted video ID:', videoId);
 
-    // Fetch both metadata and transcript in parallel
+    // Fetch both metadata and transcript in parallel.
     console.log(`[HANDLER] Starting parallel fetch for metadata and transcript`);
 
+    // Fetch metadata and transcript in parallel
     const metadataPromise = getVideoMetadata(videoId);
     const transcriptPromise = (async () => {
       try {
@@ -268,7 +458,18 @@ export default async function handler(req, res) {
       });
     }
 
-    // Prepare video info
+    // Log the first few transcript entries to debug
+    console.log('First few transcript entries:', transcriptData.slice(0, 3));
+
+    // After fetching the transcript
+    console.log('Raw transcript data (first 5 entries):', 
+      transcriptData.slice(0, 5).map(item => ({
+        offset: item.offset,
+        text: item.text.substring(0, 50),
+        duration: item.duration
+      }))
+    );
+
     let videoInfo = {
       id: videoId,
       url: `https://www.youtube.com/watch?v=${videoId}`,
@@ -282,11 +483,30 @@ export default async function handler(req, res) {
     console.log('Successfully fetched transcript, length:', transcriptData.length);
     
     // Update the transcript formatting
-    const formattedTranscript = transcriptData.map(item => ({
-      text: item.text.replace(/&amp;#39;/g, "'"),
-      start: item.offset || 0,
-      duration: item.duration || 0
-    }));
+    const formattedTranscript = transcriptData.map(item => {
+      // Get the start time from offset (it's already in seconds)
+      const startTime = item.offset || 0;
+
+      return {
+        text: item.text.replace(/&amp;#39;/g, "'"),
+        start: startTime,
+        duration: item.duration || 0
+      };
+    });
+
+    // Add debug logging to verify
+    console.log('First formatted entry with offset:', {
+      raw: transcriptData[0],
+      formatted: formattedTranscript[0]
+    });
+
+    // And check what we're sending
+    console.log('Formatted transcript (first 5 entries):', 
+      formattedTranscript.slice(0, 5).map(item => ({
+        start: item.start,
+        text: item.text.substring(0, 50)
+      }))
+    );
 
     return res.status(200).json({
       video: videoInfo,
@@ -299,7 +519,7 @@ export default async function handler(req, res) {
       stack: error.stack
     });
     
-    // Error handling remains the same as in the original file
+    // Add more specific error handling
     if (error.message.includes('Could not get transcripts')) {
       return res.status(404).json({ 
         message: 'Transcript not available',
