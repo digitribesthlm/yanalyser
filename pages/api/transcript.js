@@ -238,18 +238,19 @@ export default async function handler(req, res) {
     console.log(`[HANDLER] Starting parallel fetch for metadata and transcript`);
     
     const metadataPromise = getVideoMetadata(videoId);
-    let transcriptList;
+    let transcriptPromise;
     try {
-      transcriptList = await fetchTranscript(videoId);
+      const transcriptResult = await fetchTranscript(videoId);
+      transcriptPromise = Promise.resolve(transcriptResult);
     } catch (error) {
       console.log(`[HANDLER] Primary transcript fetch failed, trying fallback...`);
       // If it fails, try the fallback
-      transcriptList = await fetchTranscriptFallback(videoId);
+      transcriptPromise = fetchTranscriptFallback(videoId);
     }
     
     const [metadata, transcriptList] = await Promise.all([
       metadataPromise,
-      transcriptList
+      transcriptPromise
     ]);
     
     console.log(`[HANDLER] Both promises resolved. Transcript length: ${transcriptList ? transcriptList.length : 0}`);
