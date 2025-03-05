@@ -237,19 +237,18 @@ export default async function handler(req, res) {
     // Fetch both metadata and transcript in parallel
     console.log(`[HANDLER] Starting parallel fetch for metadata and transcript`);
 
-    // First get the metadata
-    const metadata = await getVideoMetadata(videoId);
+    // Fetch metadata and transcript in parallel
+    const metadataPromise = getVideoMetadata(videoId);
+    const transcriptPromise = (async () => {
+      try {
+        return await fetchTranscript(videoId);
+      } catch (error) {
+        console.log(`[HANDLER] Primary transcript fetch failed, trying fallback...`);
+        return await fetchTranscriptFallback(videoId);
+      }
+    })();
 
-    // Then try to get the transcript with fallback
-    let transcriptData;
-    try {
-      console.log(`[HANDLER] Attempting primary transcript fetch method`);
-      transcriptData = await fetchTranscript(videoId);
-    } catch (error) {
-      console.log(`[HANDLER] Primary transcript fetch failed, trying fallback...`);
-      // If it fails, try the fallback
-      transcriptData = await fetchTranscriptFallback(videoId);
-    }
+    const [metadata, transcriptData] = await Promise.all([metadataPromise, transcriptPromise]);
 
     console.log(`[HANDLER] Transcript fetch complete. Length: ${transcriptData ? transcriptData.length : 0}`);
 
