@@ -123,18 +123,6 @@ async function getVideoMetadata(videoId) {
       author: 'Unknown Author'
     };
   }
-
-
-
-
-  } catch (error) {
-    console.error('Error fetching video metadata:', error);
-    return {
-      title: 'Untitled Video',
-      description: 'No description available',
-      author: 'Unknown Author'
-    };
-  }
 }
 
 // Modify your fetchTranscript function to add more debugging
