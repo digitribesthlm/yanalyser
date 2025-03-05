@@ -234,7 +234,7 @@ export default async function handler(req, res) {
 
     console.log('Extracted video ID:', videoId);
 
-    // Fetch both metadata and transcript in parallel
+    // Fetch both metadata and transcript in parallel.
     console.log(`[HANDLER] Starting parallel fetch for metadata and transcript`);
 
     // Fetch metadata and transcript in parallel
