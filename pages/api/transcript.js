@@ -80,6 +80,34 @@ async function getVideoMetadata(videoId) {
   }
 }
 
+// Add more detailed logging to the transcript fetching process
+const fetchTranscript = async (videoId) => {
+  console.log(`[TRANSCRIPT] Starting transcript fetch for video ID: ${videoId}`);
+  
+  try {
+    console.log(`[TRANSCRIPT] Calling YoutubeTranscript.fetchTranscript for ${videoId}`);
+    const transcriptList = await YoutubeTranscript.fetchTranscript(videoId);
+    
+    console.log(`[TRANSCRIPT] Response received: ${transcriptList ? 'Success' : 'Empty response'}`);
+    console.log(`[TRANSCRIPT] Transcript entries: ${transcriptList ? transcriptList.length : 0}`);
+    
+    if (transcriptList && transcriptList.length > 0) {
+      console.log(`[TRANSCRIPT] First entry sample:`, JSON.stringify(transcriptList[0]));
+    } else {
+      console.log(`[TRANSCRIPT] No transcript entries found`);
+    }
+    
+    return transcriptList;
+  } catch (error) {
+    console.error(`[TRANSCRIPT] Error fetching transcript:`, {
+      name: error.name,
+      message: error.message,
+      stack: error.stack
+    });
+    throw error;
+  }
+};
+
 export default async function handler(req, res) {
   console.log('API Request received:', { method: req.method, body: req.body });
 
@@ -142,11 +170,25 @@ export default async function handler(req, res) {
     console.log('Extracted video ID:', videoId);
 
     // Fetch both metadata and transcript in parallel
-    console.log('Fetching metadata and transcript for video ID:', videoId);
+    console.log(`[HANDLER] Starting parallel fetch for metadata and transcript`);
+    
+    const metadataPromise = getVideoMetadata(videoId);
+    const transcriptPromise = fetchTranscript(videoId)
+      .catch(error => {
+        console.error(`[HANDLER] Transcript fetch failed:`, {
+          name: error.name,
+          message: error.message,
+          videoId
+        });
+        throw error;
+      });
+    
     const [metadata, transcriptList] = await Promise.all([
-      getVideoMetadata(videoId),
-      YoutubeTranscript.fetchTranscript(videoId)
+      metadataPromise,
+      transcriptPromise
     ]);
+    
+    console.log(`[HANDLER] Both promises resolved. Transcript length: ${transcriptList ? transcriptList.length : 0}`);
 
     if (!transcriptList || transcriptList.length === 0) {
       console.log('No transcript found for video ID:', videoId);
@@ -211,13 +253,13 @@ export default async function handler(req, res) {
       transcript: formattedTranscript
     });
   } catch (error) {
-    console.error('Error details:', {
+    console.error(`[HANDLER] Error in Promise.all:`, {
       name: error.name,
       message: error.message,
-      stack: error.stack,
+      stack: error.stack
     });
-
-    // Check for specific error types
+    
+    // Add more specific error handling
     if (error.message.includes('Could not get transcripts')) {
       return res.status(404).json({ 
         message: 'Transcript not available',
