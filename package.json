@@ -9,7 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "axios": "^1.6.0",
+    "axios": "^1.8.0",
     "bcryptjs": "^2.4.3",
     "cheerio": "^1.0.0-rc.12",
     "cookie": "^0.6.0",
